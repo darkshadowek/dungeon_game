@@ -11,160 +11,199 @@ public class DungeonGenerator : NetworkBehaviour
     [SerializeField] GameObject wallPrefab;
     [SerializeField] GameObject bossRoomFloorPrefab;
     [SerializeField] GameObject doorPrefab;
+    [SerializeField] GameObject spawnerPrefab;
+
+    [Header("Parametry wydajnoœci")]
+    [SerializeField] float blockBuildDelay = 0.01f;
+    [SerializeField] int blocksPerFrame = 50;
+    [SerializeField] bool useObjectPooling = true;
+    [SerializeField] int poolSize = 1000;
 
     [Header("Parametry sieci")]
-    [SerializeField] int networkNodesCount = 25; // Iloœæ wêz³ów w sieci
+    [SerializeField] int networkNodesCount = 25;
     [SerializeField] int tunnelLength = 8;
     [SerializeField] int minTunnelWidth = 3;
     [SerializeField] int maxTunnelWidth = 5;
     [SerializeField] float spacing = 1.5f;
-    [SerializeField] int minNodeDistance = 18; // Minimalna odleg³oœæ miêdzy wêz³ami sieci
-    [SerializeField] int mapSize = 60; // Rozmiar mapy (od -mapSize do +mapSize)
+    [SerializeField] int minNodeDistance = 18;
+    [SerializeField] int mapSize = 60;
 
-    [Header("Parametry odstaj¹cych pokoi")]
-    [SerializeField] int roomBranchChance = 80; // Szansa na pokój odstaj¹cy od wêz³a
-    [SerializeField] int roomBranchLength = 8; // D³ugoœæ ga³êzi do pokoju
-    [SerializeField] int minRoomBranchWidth = 2; // Minimalna szerokoœæ korytarza do pokoju
-    [SerializeField] int maxRoomBranchWidth = 4; // Maksymalna szerokoœæ korytarza do pokoju
+    [Header("Parametry pokoi")]
+    [SerializeField] int roomBranchChance = 80;
+    [SerializeField] int roomBranchLength = 8;
+    [SerializeField] int minRoomBranchWidth = 2;
+    [SerializeField] int maxRoomBranchWidth = 4;
     [SerializeField] int minRoomSize = 5;
     [SerializeField] int maxRoomSize = 10;
-    [SerializeField] int maxRoomsPerNode = 4; // Maksymalna iloœæ pokoi na wêze³
+    [SerializeField] int maxRoomsPerNode = 4;
 
-    [Header("Parametry pokoju bosa")]
-    [SerializeField] int bossRoomSize = 20; // Rozmiar pokoju bosa
-    [SerializeField] int bossRoomCorridorLength = 15; // D³ugoœæ korytarza do pokoju bosa
-    [SerializeField] int bossRoomCorridorWidth = 2; // Szerokoœæ korytarza do pokoju bosa
-    [SerializeField] int minDistanceFromCenter = 35; // Minimalna odleg³oœæ pokoju bosa od œrodka
-    [SerializeField] int bossRoomTunnelBuffer = 2; // Minimalna odleg³oœæ tuneli od pokoju bosa
+    [Header("Pokój bosa")]
+    [SerializeField] int bossRoomSize = 20;
+    [SerializeField] int bossRoomCorridorLength = 15;
+    [SerializeField] int bossRoomCorridorWidth = 2;
+    [SerializeField] int minDistanceFromCenter = 35;
+    [SerializeField] int bossRoomTunnelBuffer = 2;
 
-    [Header("Parametry po³¹czeñ sieci")]
-    [SerializeField] int extraConnectionsCount = 12; // Dodatkowe po³¹czenia w sieci
-    [SerializeField] int connectionChance = 75; // Szansa na dodatkowe po³¹czenie
+    [Header("Po³¹czenia")]
+    [SerializeField] int extraConnectionsCount = 12;
+    [SerializeField] int connectionChance = 75;
 
-    private HashSet<Vector2Int> floorPositions = new HashSet<Vector2Int>();
-    private HashSet<Vector2Int> roomPositions = new HashSet<Vector2Int>();
-    private HashSet<Vector2Int> bossRoomPositions = new HashSet<Vector2Int>();
-    private HashSet<Vector2Int> bossRoomCorridorPositions = new HashSet<Vector2Int>();
-    private List<Vector2Int> networkNodes = new List<Vector2Int>(); // Wêz³y sieci
-    private List<Vector2Int> roomCenters = new List<Vector2Int>();
-    private Dictionary<Vector2Int, List<Vector2Int>> nodeConnections = new Dictionary<Vector2Int, List<Vector2Int>>();
+    [Header("Spawnery")]
+    [SerializeField] bool spawnInBossRoom = true;
+    [SerializeField] float spawnerHeight = 0.5f;
+
+    // G³ówne struktury danych
+    private HashSet<Vector2Int> floorPositions;
+    private HashSet<Vector2Int> roomPositions;
+    private HashSet<Vector2Int> bossRoomPositions;
+    private HashSet<Vector2Int> bossRoomCorridorPositions;
+    private List<Vector2Int> networkNodes;
+    private List<Vector2Int> roomCenters;
+    private Dictionary<Vector2Int, Vector2Int> roomSizes;
+    private Dictionary<Vector2Int, List<Vector2Int>> nodeConnections;
     private Vector2Int bossRoomCenter;
     private Vector2Int bossRoomEntrance;
+
+    // Kierunki
+    private static readonly Vector2Int[] CardinalDirections = {
+        Vector2Int.up, Vector2Int.down, Vector2Int.left, Vector2Int.right
+    };
+    private static readonly Vector2Int[] AllDirections = {
+        Vector2Int.up, Vector2Int.down, Vector2Int.left, Vector2Int.right,
+        new Vector2Int(1, 1), new Vector2Int(1, -1), new Vector2Int(-1, 1), new Vector2Int(-1, -1)
+    };
+
+    // Listy do budowania
+    private List<Vector2Int> floorsToInstantiate;
+    private List<Vector2Int> roomFloorsToInstantiate;
+    private List<Vector2Int> bossFloorsToInstantiate;
+    private List<Vector2Int> wallsToInstantiate;
+    private List<Vector2Int> doorsToInstantiate;
+    private List<Vector2Int> spawnersToInstantiate;
+
+    // Object pooling
+    private Dictionary<GameObject, Queue<GameObject>> objectPools;
+    private HashSet<string> processedConnections;
 
     public override void OnNetworkSpawn()
     {
         if (IsServer)
         {
-            GenerateCaveNetwork();
+            InitializeDataStructures();
+            StartCoroutine(GenerateDungeonOverTime());
         }
     }
 
-    void GenerateCaveNetwork()
+    void InitializeDataStructures()
     {
-        StartCoroutine(GenerateDungeonOverTime());
+        int estimatedSize = networkNodesCount * 100;
+
+        floorPositions = new HashSet<Vector2Int>(estimatedSize);
+        roomPositions = new HashSet<Vector2Int>(estimatedSize / 4);
+        bossRoomPositions = new HashSet<Vector2Int>(bossRoomSize * bossRoomSize);
+        bossRoomCorridorPositions = new HashSet<Vector2Int>(bossRoomCorridorLength * bossRoomCorridorWidth);
+        networkNodes = new List<Vector2Int>(networkNodesCount);
+        roomCenters = new List<Vector2Int>(networkNodesCount * maxRoomsPerNode);
+        roomSizes = new Dictionary<Vector2Int, Vector2Int>();
+        nodeConnections = new Dictionary<Vector2Int, List<Vector2Int>>(networkNodesCount);
+
+        floorsToInstantiate = new List<Vector2Int>(estimatedSize);
+        roomFloorsToInstantiate = new List<Vector2Int>(estimatedSize / 4);
+        bossFloorsToInstantiate = new List<Vector2Int>(bossRoomSize * bossRoomSize);
+        wallsToInstantiate = new List<Vector2Int>(estimatedSize);
+        doorsToInstantiate = new List<Vector2Int>(100);
+        spawnersToInstantiate = new List<Vector2Int>();
+
+        processedConnections = new HashSet<string>(networkNodesCount * 4);
+
+        if (useObjectPooling)
+        {
+            InitializeObjectPools();
+        }
+    }
+
+    void InitializeObjectPools()
+    {
+        objectPools = new Dictionary<GameObject, Queue<GameObject>>();
+        GameObject[] prefabs = { floorPrefab, roomFloorPrefab, wallPrefab, bossRoomFloorPrefab, doorPrefab, spawnerPrefab };
+
+        foreach (GameObject prefab in prefabs)
+        {
+            if (prefab != null)
+            {
+                Queue<GameObject> pool = new Queue<GameObject>();
+                for (int i = 0; i < poolSize / prefabs.Length; i++)
+                {
+                    GameObject obj = Instantiate(prefab);
+                    obj.SetActive(false);
+                    pool.Enqueue(obj);
+                }
+                objectPools[prefab] = pool;
+            }
+        }
+    }
+
+    GameObject GetPooledObject(GameObject prefab)
+    {
+        if (!useObjectPooling || !objectPools.ContainsKey(prefab) || objectPools[prefab].Count == 0)
+        {
+            return Instantiate(prefab);
+        }
+
+        GameObject obj = objectPools[prefab].Dequeue();
+        obj.SetActive(true);
+        return obj;
     }
 
     IEnumerator GenerateDungeonOverTime()
     {
         Debug.Log("Rozpoczynam generowanie dungeonu...");
 
-        // 1. NAJPIERW generuj pokój bosa
-        Debug.Log("Generujê pokój bosa...");
         GenerateBossRoom();
-        yield return new WaitForSeconds(0.5f);
-
-        // 2. Generuj wêz³y sieci (z uwzglêdnieniem pokoju bosa)
-        Debug.Log("Generujê wêz³y sieci...");
         GenerateNetworkNodes();
-        yield return new WaitForSeconds(1f);
-
-        // 3. Po³¹cz wêz³y w sieæ
-        Debug.Log("£¹czê wêz³y w sieæ...");
         ConnectNetworkNodes();
-        yield return new WaitForSeconds(1f);
-
-        // 4. Stwórz dodatkowe po³¹czenia dla lepszej sieci
-        Debug.Log("Tworzê dodatkowe po³¹czenia...");
         CreateExtraConnections();
-        yield return new WaitForSeconds(1f);
-
-        // 5. Generuj tunele miêdzy wêz³ami (z uwzglêdnieniem pokoju bosa)
-        Debug.Log("Generujê tunele miêdzy wêz³ami...");
         GenerateNetworkTunnels();
-        yield return new WaitForSeconds(1f);
-
-        // 6. Dodaj odstaj¹ce pokoje
-        Debug.Log("Dodajê odstaj¹ce pokoje...");
         GenerateProtrudingRooms();
-        yield return new WaitForSeconds(0.5f);
+        PrepareObjectsForBuilding();
+        PrepareSpawners();
 
-        // 7. Instantiate objects
-        Debug.Log("Tworzê pod³ogi...");
-        InstantiateFloors();
-        yield return new WaitForSeconds(0.5f);
-
-        Debug.Log("Generujê œciany...");
-        GenerateWalls();
-
-        Debug.Log("Dodajê drzwi do pokoju bosa...");
-        GenerateBossRoomDoors();
-
+        yield return StartCoroutine(BuildAllObjects());
         Debug.Log("Generowanie dungeonu zakoñczone!");
     }
 
     void GenerateBossRoom()
     {
-        // ZnajdŸ pozycjê dla pokoju bosa daleko od œrodka
         bossRoomCenter = FindBossRoomPosition();
-
-        // Stwórz pokój bosa
         CreateBossRoom(bossRoomCenter);
-
-        Debug.Log($"Pokój bosa utworzony na pozycji: {bossRoomCenter}");
     }
 
     Vector2Int FindBossRoomPosition()
     {
-        Vector2Int candidate;
-        int attempts = 0;
-
-        do
+        for (int attempts = 0; attempts < 100; attempts++)
         {
-            // Generuj pozycjê z dala od œrodka
             float angle = Random.Range(0f, 2f * Mathf.PI);
             float distance = Random.Range(minDistanceFromCenter, mapSize - bossRoomSize / 2);
-
-            candidate = new Vector2Int(
+            Vector2Int candidate = new Vector2Int(
                 Mathf.RoundToInt(distance * Mathf.Cos(angle)),
                 Mathf.RoundToInt(distance * Mathf.Sin(angle))
             );
-            attempts++;
+            if (IsValidBossRoomPosition(candidate)) return candidate;
         }
-        while (!IsValidBossRoomPosition(candidate) && attempts < 100);
-
-        return candidate;
+        return new Vector2Int(minDistanceFromCenter, 0);
     }
 
     bool IsValidBossRoomPosition(Vector2Int pos)
     {
-        // Na pocz¹tku nie ma jeszcze innych struktur, wiêc tylko sprawdzamy granice mapy
         int halfSize = bossRoomSize / 2;
-        int buffer = bossRoomTunnelBuffer + 3; // Dodatkowy bufor
-
-        // SprawdŸ czy pokój zmieœci siê w granicach mapy
-        if (pos.x - halfSize - buffer < -mapSize || pos.x + halfSize + buffer > mapSize ||
-            pos.y - halfSize - buffer < -mapSize || pos.y + halfSize + buffer > mapSize)
-        {
-            return false;
-        }
-
-        return true;
+        int buffer = bossRoomTunnelBuffer + 3;
+        return pos.x - halfSize - buffer >= -mapSize && pos.x + halfSize + buffer <= mapSize &&
+               pos.y - halfSize - buffer >= -mapSize && pos.y + halfSize + buffer <= mapSize;
     }
 
     void CreateBossRoom(Vector2Int center)
     {
         int halfSize = bossRoomSize / 2;
-
         for (int x = -halfSize; x <= halfSize; x++)
         {
             for (int y = -halfSize; y <= halfSize; y++)
@@ -174,85 +213,62 @@ public class DungeonGenerator : NetworkBehaviour
                 floorPositions.Add(bossPos);
             }
         }
+        roomSizes[center] = new Vector2Int(bossRoomSize, bossRoomSize);
     }
 
     void GenerateNetworkNodes()
     {
-        // Pierwszy wêze³ w centrum (jeœli nie koliduje z pokojem bosa)
         Vector2Int centerNode = Vector2Int.zero;
         if (IsValidNodePosition(centerNode))
         {
             networkNodes.Add(centerNode);
-            nodeConnections[centerNode] = new List<Vector2Int>();
+            nodeConnections[centerNode] = new List<Vector2Int>(8);
         }
 
-        // Generuj pozosta³e wêz³y
-        while (networkNodes.Count < networkNodesCount)
-        {
-            Vector2Int newNode = FindValidNodePosition();
-            if (newNode != Vector2Int.zero || !networkNodes.Contains(Vector2Int.zero))
-            {
-                networkNodes.Add(newNode);
-                nodeConnections[newNode] = new List<Vector2Int>();
-            }
-        }
-    }
-
-    Vector2Int FindValidNodePosition()
-    {
-        Vector2Int candidate;
         int attempts = 0;
-
-        do
+        while (networkNodes.Count < networkNodesCount && attempts < networkNodesCount * 50)
         {
-            candidate = new Vector2Int(
+            Vector2Int newNode = new Vector2Int(
                 Random.Range(-mapSize, mapSize + 1),
                 Random.Range(-mapSize, mapSize + 1)
             );
+            if (IsValidNodePosition(newNode))
+            {
+                networkNodes.Add(newNode);
+                nodeConnections[newNode] = new List<Vector2Int>(8);
+            }
             attempts++;
         }
-        while (!IsValidNodePosition(candidate) && attempts < 1000);
-
-        return candidate;
     }
 
     bool IsValidNodePosition(Vector2Int pos)
     {
-        // SprawdŸ odleg³oœæ od innych wêz³ów
-        foreach (Vector2Int existingNode in networkNodes)
+        if (IsTooCloseToBossRoom(pos)) return false;
+        for (int i = 0; i < networkNodes.Count; i++)
         {
-            if (Vector2Int.Distance(pos, existingNode) < minNodeDistance)
+            if (Vector2Int.Distance(pos, networkNodes[i]) < minNodeDistance)
                 return false;
         }
-
-        // SprawdŸ odleg³oœæ od pokoju bosa (z buforem)
-        if (IsTooCloseToBossRoom(pos))
-            return false;
-
         return true;
     }
 
     bool IsTooCloseToBossRoom(Vector2Int pos)
     {
         if (bossRoomPositions.Count == 0) return false;
-
         int halfSize = bossRoomSize / 2;
-        int buffer = bossRoomTunnelBuffer + minNodeDistance; // Wiêkszy bufor dla wêz³ów
-
-        // SprawdŸ czy wêze³ jest za blisko pokoju bosa
-        float distanceToBossCenter = Vector2Int.Distance(pos, bossRoomCenter);
-        return distanceToBossCenter < (halfSize + buffer);
+        int buffer = bossRoomTunnelBuffer + minNodeDistance;
+        return Vector2Int.Distance(pos, bossRoomCenter) < (halfSize + buffer);
     }
 
     void ConnectNetworkNodes()
     {
-        // Po³¹cz ka¿dy wêze³ z najbli¿szymi wêz³ami (minimum 2-4 po³¹czenia)
-        foreach (Vector2Int node in networkNodes)
+        for (int i = 0; i < networkNodes.Count; i++)
         {
+            Vector2Int node = networkNodes[i];
             List<Vector2Int> nearestNodes = FindNearestNodes(node, 4);
-
-            foreach (Vector2Int nearestNode in nearestNodes)
+            for (int j = 0; j < nearestNodes.Count; j++)
             {
+                Vector2Int nearestNode = nearestNodes[j];
                 if (!nodeConnections[node].Contains(nearestNode))
                 {
                     nodeConnections[node].Add(nearestNode);
@@ -260,8 +276,6 @@ public class DungeonGenerator : NetworkBehaviour
                 }
             }
         }
-
-        // Po³¹cz pokój bosa z najbli¿szym wêz³em
         ConnectBossRoomToNetwork();
     }
 
@@ -269,21 +283,17 @@ public class DungeonGenerator : NetworkBehaviour
     {
         if (networkNodes.Count == 0) return;
 
-        // ZnajdŸ najbli¿szy wêze³ do pokoju bosa
         Vector2Int nearestNode = networkNodes[0];
         float minDistance = Vector2Int.Distance(bossRoomCenter, nearestNode);
-
-        foreach (Vector2Int node in networkNodes)
+        for (int i = 1; i < networkNodes.Count; i++)
         {
-            float distance = Vector2Int.Distance(bossRoomCenter, node);
+            float distance = Vector2Int.Distance(bossRoomCenter, networkNodes[i]);
             if (distance < minDistance)
             {
                 minDistance = distance;
-                nearestNode = node;
+                nearestNode = networkNodes[i];
             }
         }
-
-        // Stwórz korytarz do pokoju bosa
         CreateBossRoomCorridor(nearestNode, bossRoomCenter);
     }
 
@@ -291,54 +301,37 @@ public class DungeonGenerator : NetworkBehaviour
     {
         Vector2Int current = from;
         Vector2Int direction = GetDirectionTo(from, to);
+        int targetDistance = bossRoomSize / 2 + 2;
 
-        // Stwórz korytarz do pokoju bosa
-        while (Vector2Int.Distance(current, to) > bossRoomSize / 2 + 2)
+        while (Vector2Int.Distance(current, to) > targetDistance)
         {
             current += direction;
-
-            // Dodaj segment korytarza o szerokoœci okreœlonej w parametrach
             for (int w = -bossRoomCorridorWidth / 2; w <= bossRoomCorridorWidth / 2; w++)
             {
-                Vector2Int offset = (direction.x != 0)
-                    ? new Vector2Int(0, w)
-                    : new Vector2Int(w, 0);
-
+                Vector2Int offset = (direction.x != 0) ? new Vector2Int(0, w) : new Vector2Int(w, 0);
                 Vector2Int corridorPos = current + offset;
                 floorPositions.Add(corridorPos);
                 bossRoomCorridorPositions.Add(corridorPos);
             }
         }
-
-        // Zapisz pozycjê wejœcia do pokoju bosa
         bossRoomEntrance = current;
     }
 
     Vector2Int GetDirectionTo(Vector2Int from, Vector2Int to)
     {
         Vector2Int diff = to - from;
-
-        // Wybierz g³ówny kierunek
-        if (Mathf.Abs(diff.x) > Mathf.Abs(diff.y))
-        {
-            return new Vector2Int(diff.x > 0 ? 1 : -1, 0);
-        }
-        else
-        {
-            return new Vector2Int(0, diff.y > 0 ? 1 : -1);
-        }
+        return Mathf.Abs(diff.x) > Mathf.Abs(diff.y)
+            ? new Vector2Int(diff.x > 0 ? 1 : -1, 0)
+            : new Vector2Int(0, diff.y > 0 ? 1 : -1);
     }
 
     List<Vector2Int> FindNearestNodes(Vector2Int fromNode, int count)
     {
-        List<Vector2Int> candidates = new List<Vector2Int>(networkNodes);
-        candidates.Remove(fromNode);
-
-        candidates.Sort((a, b) =>
-            Vector2Int.Distance(fromNode, a).CompareTo(Vector2Int.Distance(fromNode, b))
-        );
-
-        return candidates.GetRange(0, Mathf.Min(count, candidates.Count));
+        List<Vector2Int> tempList = new List<Vector2Int>(networkNodes);
+        tempList.Remove(fromNode);
+        tempList.Sort((a, b) => Vector2Int.Distance(fromNode, a).CompareTo(Vector2Int.Distance(fromNode, b)));
+        int returnCount = Mathf.Min(count, tempList.Count);
+        return tempList.GetRange(0, returnCount);
     }
 
     void CreateExtraConnections()
@@ -347,9 +340,7 @@ public class DungeonGenerator : NetworkBehaviour
         {
             Vector2Int nodeA = networkNodes[Random.Range(0, networkNodes.Count)];
             Vector2Int nodeB = networkNodes[Random.Range(0, networkNodes.Count)];
-
-            if (nodeA != nodeB && !nodeConnections[nodeA].Contains(nodeB) &&
-                Random.Range(0, 100) < connectionChance)
+            if (nodeA != nodeB && !nodeConnections[nodeA].Contains(nodeB) && Random.Range(0, 100) < connectionChance)
             {
                 nodeConnections[nodeA].Add(nodeB);
                 nodeConnections[nodeB].Add(nodeA);
@@ -359,14 +350,15 @@ public class DungeonGenerator : NetworkBehaviour
 
     void GenerateNetworkTunnels()
     {
-        HashSet<string> processedConnections = new HashSet<string>();
-
-        foreach (Vector2Int node in networkNodes)
+        processedConnections.Clear();
+        for (int i = 0; i < networkNodes.Count; i++)
         {
-            foreach (Vector2Int connectedNode in nodeConnections[node])
+            Vector2Int node = networkNodes[i];
+            List<Vector2Int> connections = nodeConnections[node];
+            for (int j = 0; j < connections.Count; j++)
             {
+                Vector2Int connectedNode = connections[j];
                 string connectionKey = GetConnectionKey(node, connectedNode);
-
                 if (!processedConnections.Contains(connectionKey))
                 {
                     CreateTunnel(node, connectedNode);
@@ -378,7 +370,6 @@ public class DungeonGenerator : NetworkBehaviour
 
     string GetConnectionKey(Vector2Int a, Vector2Int b)
     {
-        // Sortuj pozycje ¿eby unikn¹æ duplikatów (a-b i b-a to to samo)
         Vector2Int first = (a.x < b.x || (a.x == b.x && a.y < b.y)) ? a : b;
         Vector2Int second = (first == a) ? b : a;
         return $"{first.x},{first.y}-{second.x},{second.y}";
@@ -389,14 +380,12 @@ public class DungeonGenerator : NetworkBehaviour
         Vector2Int current = from;
         int width = Random.Range(minTunnelWidth, maxTunnelWidth + 1);
 
-        // IdŸ w poziomie
         while (current.x != to.x)
         {
             current.x += (current.x < to.x) ? 1 : -1;
             AddTunnelSegment(current, width, true);
         }
 
-        // IdŸ w pionie
         while (current.y != to.y)
         {
             current.y += (current.y < to.y) ? 1 : -1;
@@ -406,51 +395,34 @@ public class DungeonGenerator : NetworkBehaviour
 
     void AddTunnelSegment(Vector2Int center, int width, bool horizontal)
     {
-        // SprawdŸ kolizje z pokojem bosa przed dodaniem segmentu tunelu
-        if (IsTooCloseToBossRoom(center, width, horizontal))
-            return;
-
+        if (IsTooCloseToBossRoom(center, width, horizontal)) return;
         for (int w = -width / 2; w <= width / 2; w++)
         {
-            Vector2Int offset = horizontal
-                ? new Vector2Int(0, w)
-                : new Vector2Int(w, 0);
-
+            Vector2Int offset = horizontal ? new Vector2Int(0, w) : new Vector2Int(w, 0);
             floorPositions.Add(center + offset);
         }
     }
 
     bool IsTooCloseToBossRoom(Vector2Int center, int width, bool horizontal)
     {
-        // SprawdŸ czy segment tunelu jest za blisko pokoju bosa
         if (bossRoomPositions.Count == 0) return false;
-
         for (int w = -width / 2; w <= width / 2; w++)
         {
-            Vector2Int offset = horizontal
-                ? new Vector2Int(0, w)
-                : new Vector2Int(w, 0);
-
+            Vector2Int offset = horizontal ? new Vector2Int(0, w) : new Vector2Int(w, 0);
             Vector2Int checkPos = center + offset;
-
-            // SprawdŸ czy pozycja jest za blisko pokoju bosa
-            foreach (Vector2Int bossPos in bossRoomPositions)
-            {
-                if (Vector2Int.Distance(checkPos, bossPos) < bossRoomTunnelBuffer)
-                    return true;
-            }
+            if (Vector2Int.Distance(checkPos, bossRoomCenter) < bossRoomSize / 2 + bossRoomTunnelBuffer)
+                return true;
         }
-
         return false;
     }
 
     void GenerateProtrudingRooms()
     {
-        foreach (Vector2Int node in networkNodes)
+        for (int i = 0; i < networkNodes.Count; i++)
         {
+            Vector2Int node = networkNodes[i];
             int roomsForThisNode = Random.Range(1, maxRoomsPerNode + 1);
-
-            for (int i = 0; i < roomsForThisNode; i++)
+            for (int j = 0; j < roomsForThisNode; j++)
             {
                 if (Random.Range(0, 100) < roomBranchChance)
                 {
@@ -462,74 +434,55 @@ public class DungeonGenerator : NetworkBehaviour
 
     void CreateProtrudingRoom(Vector2Int nodePos)
     {
-        // SprawdŸ czy wêze³ nie jest za blisko pokoju bosa
-        if (IsTooCloseToBossRoom(nodePos))
-            return;
+        if (IsTooCloseToBossRoom(nodePos)) return;
 
-        // Wybierz losowy kierunek dla ga³êzi
-        Vector2Int[] directions = {
-            Vector2Int.up, Vector2Int.down,
-            Vector2Int.left, Vector2Int.right,
-            new Vector2Int(1, 1), new Vector2Int(1, -1),
-            new Vector2Int(-1, 1), new Vector2Int(-1, -1)
-        };
-
-        Vector2Int direction = directions[Random.Range(0, directions.Length)];
-
-        // Stwórz ga³¹Ÿ do pokoju z gwarantowan¹ szerokoœci¹ minimum 2
+        Vector2Int direction = AllDirections[Random.Range(0, AllDirections.Length)];
         Vector2Int branchPos = nodePos;
-        int branchWidth = Random.Range(minRoomBranchWidth, maxRoomBranchWidth + 1);
-
-        // Upewnij siê, ¿e szerokoœæ jest co najmniej 2
-        if (branchWidth < 2) branchWidth = 2;
+        int branchWidth = Mathf.Max(Random.Range(minRoomBranchWidth, maxRoomBranchWidth + 1), 2);
 
         for (int i = 0; i < roomBranchLength; i++)
         {
             branchPos += direction;
-
-            // SprawdŸ kolizje z pokojem bosa
-            if (IsTooCloseToBossRoom(branchPos))
-                return;
-
-            // Dodaj segment ga³êzi z odpowiedni¹ szerokoœci¹
-            if (direction.x != 0 && direction.y == 0) // Poziomo
-            {
-                for (int w = -branchWidth / 2; w <= branchWidth / 2; w++)
-                {
-                    Vector2Int pos = branchPos + new Vector2Int(0, w);
-                    if (!IsTooCloseToBossRoom(pos))
-                        floorPositions.Add(pos);
-                }
-            }
-            else if (direction.x == 0 && direction.y != 0) // Pionowo
-            {
-                for (int w = -branchWidth / 2; w <= branchWidth / 2; w++)
-                {
-                    Vector2Int pos = branchPos + new Vector2Int(w, 0);
-                    if (!IsTooCloseToBossRoom(pos))
-                        floorPositions.Add(pos);
-                }
-            }
-            else // Przek¹tnie - twórz kwadratowy tunel
-            {
-                int halfWidth = branchWidth / 2;
-                for (int x = -halfWidth; x <= halfWidth; x++)
-                {
-                    for (int y = -halfWidth; y <= halfWidth; y++)
-                    {
-                        Vector2Int pos = branchPos + new Vector2Int(x, y);
-                        if (!IsTooCloseToBossRoom(pos))
-                            floorPositions.Add(pos);
-                    }
-                }
-            }
+            if (IsTooCloseToBossRoom(branchPos)) return;
+            AddRoomBranch(branchPos, direction, branchWidth);
         }
 
-        // Stwórz pokój na koñcu ga³êzi
         Vector2Int roomCenter = branchPos + direction * 2;
         if (!IsTooCloseToBossRoom(roomCenter))
         {
             CreateRoom(roomCenter);
+        }
+    }
+
+    void AddRoomBranch(Vector2Int branchPos, Vector2Int direction, int branchWidth)
+    {
+        if (direction.x != 0 && direction.y == 0)
+        {
+            for (int w = -branchWidth / 2; w <= branchWidth / 2; w++)
+            {
+                Vector2Int pos = branchPos + new Vector2Int(0, w);
+                if (!IsTooCloseToBossRoom(pos)) floorPositions.Add(pos);
+            }
+        }
+        else if (direction.x == 0 && direction.y != 0)
+        {
+            for (int w = -branchWidth / 2; w <= branchWidth / 2; w++)
+            {
+                Vector2Int pos = branchPos + new Vector2Int(w, 0);
+                if (!IsTooCloseToBossRoom(pos)) floorPositions.Add(pos);
+            }
+        }
+        else
+        {
+            int halfWidth = branchWidth / 2;
+            for (int x = -halfWidth; x <= halfWidth; x++)
+            {
+                for (int y = -halfWidth; y <= halfWidth; y++)
+                {
+                    Vector2Int pos = branchPos + new Vector2Int(x, y);
+                    if (!IsTooCloseToBossRoom(pos)) floorPositions.Add(pos);
+                }
+            }
         }
     }
 
@@ -539,14 +492,13 @@ public class DungeonGenerator : NetworkBehaviour
         int roomHeight = Random.Range(minRoomSize, maxRoomSize + 1);
 
         roomCenters.Add(center);
+        roomSizes[center] = new Vector2Int(roomWidth, roomHeight);
 
         for (int x = -roomWidth / 2; x <= roomWidth / 2; x++)
         {
             for (int y = -roomHeight / 2; y <= roomHeight / 2; y++)
             {
                 Vector2Int roomPos = center + new Vector2Int(x, y);
-
-                // SprawdŸ kolizje z pokojem bosa przed dodaniem pozycji pokoju
                 if (!IsTooCloseToBossRoom(roomPos))
                 {
                     floorPositions.Add(roomPos);
@@ -556,114 +508,178 @@ public class DungeonGenerator : NetworkBehaviour
         }
     }
 
-    void InstantiateFloors()
+    void PrepareObjectsForBuilding()
     {
-        // Generuj korytarze (zwyk³e pod³ogi)
         foreach (Vector2Int pos in floorPositions)
         {
-            if (!roomPositions.Contains(pos) && !bossRoomPositions.Contains(pos))
-            {
-                Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, 0);
-                GameObject floor = Instantiate(floorPrefab, worldPos, Quaternion.identity);
-                floor.GetComponent<NetworkObject>().Spawn(true);
-                floor.transform.SetParent(transform);
-            }
+            if (bossRoomPositions.Contains(pos))
+                bossFloorsToInstantiate.Add(pos);
+            else if (roomPositions.Contains(pos))
+                roomFloorsToInstantiate.Add(pos);
+            else
+                floorsToInstantiate.Add(pos);
         }
-
-        // Generuj pokoje (specjalne pod³ogi)
-        foreach (Vector2Int pos in roomPositions)
-        {
-            Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, 0);
-            GameObject roomFloor = Instantiate(roomFloorPrefab, worldPos, Quaternion.identity);
-            roomFloor.GetComponent<NetworkObject>().Spawn(true);
-            roomFloor.transform.SetParent(transform);
-        }
-
-        // Generuj pokój bosa (specjalne pod³ogi)
-        foreach (Vector2Int pos in bossRoomPositions)
-        {
-            Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, 0);
-            GameObject bossFloor = Instantiate(bossRoomFloorPrefab, worldPos, Quaternion.identity);
-            bossFloor.GetComponent<NetworkObject>().Spawn(true);
-            bossFloor.transform.SetParent(transform);
-        }
+        PrepareWalls();
+        PrepareDoors();
     }
 
-    void GenerateWalls()
+    void PrepareWalls()
     {
-        Vector2Int[] directions = new Vector2Int[]
-        {
-            Vector2Int.up, Vector2Int.down,
-            Vector2Int.left, Vector2Int.right,
-            new Vector2Int(1, 1), new Vector2Int(1, -1),
-            new Vector2Int(-1, 1), new Vector2Int(-1, -1)
-        };
-
         HashSet<Vector2Int> wallsPlaced = new HashSet<Vector2Int>();
-
         foreach (Vector2Int pos in floorPositions)
         {
-            foreach (Vector2Int dir in directions)
+            for (int i = 0; i < AllDirections.Length; i++)
             {
-                Vector2Int neighbor = pos + dir;
+                Vector2Int neighbor = pos + AllDirections[i];
                 if (!floorPositions.Contains(neighbor) && !wallsPlaced.Contains(neighbor))
                 {
-                    // Postaw zwyk³¹ œcianê
-                    Vector3 wallPos = new Vector3(neighbor.x * spacing, neighbor.y * spacing, 0);
-                    GameObject wall = Instantiate(wallPrefab, wallPos, Quaternion.identity);
-                    wall.GetComponent<NetworkObject>().Spawn(true);
-                    wall.transform.SetParent(transform);
+                    wallsToInstantiate.Add(neighbor);
                     wallsPlaced.Add(neighbor);
                 }
             }
         }
     }
 
-    void GenerateBossRoomDoors()
+    void PrepareDoors()
     {
-        Vector2Int[] directions = new Vector2Int[]
-        {
-            Vector2Int.up, Vector2Int.down,
-            Vector2Int.left, Vector2Int.right
-        };
-
         HashSet<Vector2Int> doorPositions = new HashSet<Vector2Int>();
-
-        // SprawdŸ ka¿d¹ pozycjê pokoju bosa
         foreach (Vector2Int bossPos in bossRoomPositions)
         {
-            // SprawdŸ wszystkie 4 kierunki (nie przek¹tne)
-            foreach (Vector2Int dir in directions)
+            for (int i = 0; i < CardinalDirections.Length; i++)
             {
-                Vector2Int neighbor = bossPos + dir;
-
-                // SprawdŸ czy s¹siad to zwyk³a pod³oga (nie pokój bosa, nie pokój zwyk³y)
-                if (floorPositions.Contains(neighbor) &&
-                    !bossRoomPositions.Contains(neighbor) &&
-                    !roomPositions.Contains(neighbor) &&
-                    !doorPositions.Contains(neighbor))
+                Vector2Int neighbor = bossPos + CardinalDirections[i];
+                if (floorPositions.Contains(neighbor) && !bossRoomPositions.Contains(neighbor) &&
+                    !roomPositions.Contains(neighbor) && !doorPositions.Contains(neighbor))
                 {
-                    // Postaw drzwi na granicy
-                    Vector3 doorPos = new Vector3(neighbor.x * spacing, neighbor.y * spacing, 0);
-                    GameObject door = Instantiate(doorPrefab, doorPos, Quaternion.identity);
-                    door.GetComponent<NetworkObject>().Spawn(true);
-                    door.transform.SetParent(transform);
-                     
+                    doorsToInstantiate.Add(neighbor);
                     doorPositions.Add(neighbor);
-                    Debug.Log($"Drzwi do pokoju bosa na pozycji: {neighbor}");
                 }
             }
         }
     }
 
-    // Metoda pomocnicza do debugowania - mo¿esz j¹ wywo³aæ ¿eby zobaczyæ pozycjê pokoju bosa
-    public Vector2Int GetBossRoomCenter()
+    void PrepareSpawners()
     {
-        return bossRoomCenter;
+        if (spawnerPrefab == null)
+        {
+            Debug.LogWarning("Spawner prefab nie zosta³ przypisany!");
+            return;
+        }
+
+        // Spawnery tylko w centrach pokoi
+        foreach (Vector2Int roomCenter in roomCenters)
+        {
+            spawnersToInstantiate.Add(roomCenter);
+        }
+
+        // Opcjonalnie w pokoju bosa
+        if (spawnInBossRoom)
+        {
+            spawnersToInstantiate.Add(bossRoomCenter);
+        }
+
+        Debug.Log($"Przygotowano {spawnersToInstantiate.Count} spawnerów");
     }
 
-    public Vector2Int GetBossRoomEntrance()
+    IEnumerator BuildAllObjects()
     {
-        return bossRoomEntrance;
+        yield return StartCoroutine(BuildObjectsFromList(bossFloorsToInstantiate, bossRoomFloorPrefab, "boss floors"));
+        yield return StartCoroutine(BuildObjectsFromList(roomFloorsToInstantiate, roomFloorPrefab, "room floors"));
+        yield return StartCoroutine(BuildObjectsFromList(floorsToInstantiate, floorPrefab, "corridor floors"));
+        yield return StartCoroutine(BuildObjectsFromList(wallsToInstantiate, wallPrefab, "walls"));
+        yield return StartCoroutine(BuildObjectsFromList(doorsToInstantiate, doorPrefab, "doors"));
+        yield return StartCoroutine(BuildSpawners());
     }
+
+    IEnumerator BuildObjectsFromList(List<Vector2Int> positions, GameObject prefab, string objectType)
+    {
+        Debug.Log($"Building {positions.Count} {objectType}...");
+        int index = 0;
+        while (index < positions.Count)
+        {
+            int endIndex = Mathf.Min(index + blocksPerFrame, positions.Count);
+            for (int i = index; i < endIndex; i++)
+            {
+                Vector2Int pos = positions[i];
+                Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, 0);
+                GameObject obj = GetPooledObject(prefab);
+                obj.transform.position = worldPos;
+                obj.transform.rotation = Quaternion.identity;
+                obj.GetComponent<NetworkObject>().Spawn(true);
+                obj.transform.SetParent(transform);
+            }
+            index = endIndex;
+            yield return new WaitForSeconds(blockBuildDelay);
+        }
+    }
+
+    IEnumerator BuildSpawners()
+    {
+        if (spawnerPrefab == null || spawnersToInstantiate.Count == 0) yield break;
+
+        Debug.Log($"Building {spawnersToInstantiate.Count} spawners...");
+
+        // S³ownik do œledzenia spawnerów na ka¿dej pozycji
+        Dictionary<Vector2Int, GameObject> spawnersAtPosition = new Dictionary<Vector2Int, GameObject>();
+
+        int index = 0;
+        while (index < spawnersToInstantiate.Count)
+        {
+            int endIndex = Mathf.Min(index + blocksPerFrame, spawnersToInstantiate.Count);
+            for (int i = index; i < endIndex; i++)
+            {
+                Vector2Int pos = spawnersToInstantiate[i];
+
+                // SprawdŸ czy na tej pozycji ju¿ jest spawner
+                if (spawnersAtPosition.ContainsKey(pos))
+                {
+                    // ZnajdŸ istniej¹cy spawner i zwiêksz mu poziom
+                    GameObject existingSpawner = spawnersAtPosition[pos];
+                    RoomSpawner existingRoomSpawner = existingSpawner.GetComponent<RoomSpawner>();
+
+                    if (existingRoomSpawner != null)
+                    {
+                        existingRoomSpawner.spawnerLevel++;
+                        Debug.Log($"Spawner na pozycji {pos} zosta³ poziomowany!");
+                    }
+
+                    continue; // PrzejdŸ do nastêpnego spawnera
+                }
+
+                // Stwórz nowy spawner
+                Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, spawnerHeight);
+                GameObject spawner = GetPooledObject(spawnerPrefab);
+                spawner.transform.position = worldPos;
+                spawner.transform.rotation = Quaternion.identity;
+
+                // Przeka¿ wymiary pokoju do RoomSpawner
+                RoomSpawner roomSpawner = spawner.GetComponent<RoomSpawner>();
+                if (roomSpawner != null && roomSizes.ContainsKey(pos))
+                {
+                    Vector2Int roomSize = roomSizes[pos];
+                    roomSpawner.roomSizeArea = roomSize;
+                }
+
+                NetworkObject networkObj = spawner.GetComponent<NetworkObject>();
+                if (networkObj != null)
+                {
+                    networkObj.Spawn(true);
+                }
+                spawner.transform.SetParent(transform);
+
+                // Zapisz spawner w s³owniku
+                spawnersAtPosition[pos] = spawner;
+            }
+            index = endIndex;
+            yield return new WaitForSeconds(blockBuildDelay);
+        }
+
+    }
+
+    // Publiczne metody dostêpu
+    public Vector2Int GetBossRoomCenter() => bossRoomCenter;
+    public Vector2Int GetBossRoomEntrance() => bossRoomEntrance;
+    public List<Vector2Int> GetRoomCenters() => new List<Vector2Int>(roomCenters);
+    public List<Vector2Int> GetSpawnerPositions() => new List<Vector2Int>(spawnersToInstantiate);
+    public Dictionary<Vector2Int, Vector2Int> GetRoomSizes() => new Dictionary<Vector2Int, Vector2Int>(roomSizes);
 }
