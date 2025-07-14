@@ -5,23 +5,15 @@ using System.Collections;
 
 public class DungeonGenerator : NetworkBehaviour
 {
-    [Header("Prefaby")]
-    [SerializeField] GameObject floorPrefab;
-    [SerializeField] GameObject roomFloorPrefab;
-    [SerializeField] GameObject wallPrefab;
-    [SerializeField] GameObject bossRoomFloorPrefab;
-    [SerializeField] GameObject doorPrefab;
-    [SerializeField] GameObject spawnerPrefab;
+    [Header("Konfiguracja prefabów")]
+    [SerializeField] private DungeonPrefabs dungeonPrefabs;
 
     [Header("Parametry wydajnoœci")]
     [SerializeField] float blockBuildDelay = 0.01f;
     [SerializeField] int blocksPerFrame = 50;
-    [SerializeField] bool useObjectPooling = true;
-    [SerializeField] int poolSize = 1000;
 
     [Header("Parametry sieci")]
     [SerializeField] int networkNodesCount = 25;
-    [SerializeField] int tunnelLength = 8;
     [SerializeField] int minTunnelWidth = 3;
     [SerializeField] int maxTunnelWidth = 5;
     [SerializeField] float spacing = 1.5f;
@@ -39,7 +31,6 @@ public class DungeonGenerator : NetworkBehaviour
 
     [Header("Pokój bosa")]
     [SerializeField] int bossRoomSize = 20;
-    [SerializeField] int bossRoomCorridorLength = 15;
     [SerializeField] int bossRoomCorridorWidth = 2;
     [SerializeField] int minDistanceFromCenter = 35;
     [SerializeField] int bossRoomTunnelBuffer = 2;
@@ -51,12 +42,17 @@ public class DungeonGenerator : NetworkBehaviour
     [Header("Spawnery")]
     [SerializeField] bool spawnInBossRoom = true;
     [SerializeField] float spawnerHeight = 0.5f;
+    [SerializeField] bool useRandomSpawnerVariants = true;
+
+    [Header("Ró¿norodnoœæ prefabów")]
+    [SerializeField] bool useAlternativeFloors = true;
+    [SerializeField] bool useAlternativeWalls = true;
+    [SerializeField][Range(0f, 1f)] float alternativePrefabChance = 0.3f;
 
     // G³ówne struktury danych
     private HashSet<Vector2Int> floorPositions;
     private HashSet<Vector2Int> roomPositions;
     private HashSet<Vector2Int> bossRoomPositions;
-    private HashSet<Vector2Int> bossRoomCorridorPositions;
     private List<Vector2Int> networkNodes;
     private List<Vector2Int> roomCenters;
     private Dictionary<Vector2Int, Vector2Int> roomSizes;
@@ -80,16 +76,79 @@ public class DungeonGenerator : NetworkBehaviour
     private List<Vector2Int> wallsToInstantiate;
     private List<Vector2Int> doorsToInstantiate;
     private List<Vector2Int> spawnersToInstantiate;
+    private List<Vector2Int> bossDoorsToInstantiate;
 
-    // Object pooling
-    private Dictionary<GameObject, Queue<GameObject>> objectPools;
     private HashSet<string> processedConnections;
+
+    [Header("UI Controls")]
+    [SerializeField] private UnityEngine.UI.Button generateDungeonButton;
+
+    private bool isDungeonGenerated = false;
 
     public override void OnNetworkSpawn()
     {
         if (IsServer)
         {
+            ValidatePrefabConfiguration();
             InitializeDataStructures();
+            SetupUI();
+        }
+    }
+
+    void ValidatePrefabConfiguration()
+    {
+        if (dungeonPrefabs == null)
+        {
+            Debug.LogError("DungeonPrefabs nie zosta³ przypisany! Generator nie bêdzie dzia³aæ poprawnie.");
+            return;
+        }
+
+        if (dungeonPrefabs.floorPrefab == null)
+        {
+            Debug.LogError("Podstawowy floor prefab nie zosta³ przypisany w DungeonPrefabs!");
+        }
+
+        if (dungeonPrefabs.wallPrefab == null)
+        {
+            Debug.LogError("Podstawowy wall prefab nie zosta³ przypisany w DungeonPrefabs!");
+        }
+
+        if (dungeonPrefabs.spawnerPrefab == null)
+        {
+            Debug.LogWarning("Spawner prefab nie zosta³ przypisany w DungeonPrefabs!");
+        }
+    }
+
+    void SetupUI()
+    {
+        if (generateDungeonButton != null)
+        {
+            generateDungeonButton.onClick.AddListener(OnGenerateDungeonButtonPressed);
+            generateDungeonButton.interactable = true;
+        }
+        else
+        {
+            Debug.LogWarning("Generate Dungeon Button nie zosta³ przypisany w inspectorze!");
+        }
+    }
+
+    void OnGenerateDungeonButtonPressed()
+    {
+        if (IsServer && !isDungeonGenerated)
+        {
+            StartCoroutine(GenerateDungeonOverTime());
+            if (generateDungeonButton != null)
+            {
+                generateDungeonButton.interactable = false;
+            }
+        }
+    }
+
+    // Publiczna metoda do generowania dungeonu (opcjonalnie z kodu)
+    public void GenerateDungeon()
+    {
+        if (IsServer && !isDungeonGenerated)
+        {
             StartCoroutine(GenerateDungeonOverTime());
         }
     }
@@ -98,67 +157,42 @@ public class DungeonGenerator : NetworkBehaviour
     {
         int estimatedSize = networkNodesCount * 100;
 
-        floorPositions = new HashSet<Vector2Int>(estimatedSize);
-        roomPositions = new HashSet<Vector2Int>(estimatedSize / 4);
-        bossRoomPositions = new HashSet<Vector2Int>(bossRoomSize * bossRoomSize);
-        bossRoomCorridorPositions = new HashSet<Vector2Int>(bossRoomCorridorLength * bossRoomCorridorWidth);
-        networkNodes = new List<Vector2Int>(networkNodesCount);
-        roomCenters = new List<Vector2Int>(networkNodesCount * maxRoomsPerNode);
+        floorPositions = new HashSet<Vector2Int>();
+        roomPositions = new HashSet<Vector2Int>();
+        bossRoomPositions = new HashSet<Vector2Int>();
+        networkNodes = new List<Vector2Int>();
+        roomCenters = new List<Vector2Int>();
         roomSizes = new Dictionary<Vector2Int, Vector2Int>();
-        nodeConnections = new Dictionary<Vector2Int, List<Vector2Int>>(networkNodesCount);
+        nodeConnections = new Dictionary<Vector2Int, List<Vector2Int>>();
 
-        floorsToInstantiate = new List<Vector2Int>(estimatedSize);
-        roomFloorsToInstantiate = new List<Vector2Int>(estimatedSize / 4);
-        bossFloorsToInstantiate = new List<Vector2Int>(bossRoomSize * bossRoomSize);
-        wallsToInstantiate = new List<Vector2Int>(estimatedSize);
-        doorsToInstantiate = new List<Vector2Int>(100);
+        floorsToInstantiate = new List<Vector2Int>();
+        roomFloorsToInstantiate = new List<Vector2Int>();
+        bossFloorsToInstantiate = new List<Vector2Int>();
+        wallsToInstantiate = new List<Vector2Int>();
+        doorsToInstantiate = new List<Vector2Int>();
         spawnersToInstantiate = new List<Vector2Int>();
+        bossDoorsToInstantiate = new List<Vector2Int>();
 
-        processedConnections = new HashSet<string>(networkNodesCount * 4);
-
-        if (useObjectPooling)
-        {
-            InitializeObjectPools();
-        }
-    }
-
-    void InitializeObjectPools()
-    {
-        objectPools = new Dictionary<GameObject, Queue<GameObject>>();
-        GameObject[] prefabs = { floorPrefab, roomFloorPrefab, wallPrefab, bossRoomFloorPrefab, doorPrefab, spawnerPrefab };
-
-        foreach (GameObject prefab in prefabs)
-        {
-            if (prefab != null)
-            {
-                Queue<GameObject> pool = new Queue<GameObject>();
-                for (int i = 0; i < poolSize / prefabs.Length; i++)
-                {
-                    GameObject obj = Instantiate(prefab);
-                    obj.SetActive(false);
-                    pool.Enqueue(obj);
-                }
-                objectPools[prefab] = pool;
-            }
-        }
-    }
-
-    GameObject GetPooledObject(GameObject prefab)
-    {
-        if (!useObjectPooling || !objectPools.ContainsKey(prefab) || objectPools[prefab].Count == 0)
-        {
-            return Instantiate(prefab);
-        }
-
-        GameObject obj = objectPools[prefab].Dequeue();
-        obj.SetActive(true);
-        return obj;
+        processedConnections = new HashSet<string>();
     }
 
     IEnumerator GenerateDungeonOverTime()
     {
-        Debug.Log("Rozpoczynam generowanie dungeonu...");
+        if (isDungeonGenerated)
+        {
+            Debug.Log("Dungeon ju¿ zosta³ wygenerowany!");
+            yield break;
+        }
 
+        if (dungeonPrefabs == null)
+        {
+            Debug.LogError("Nie mo¿na wygenerowaæ dungeonu - brak konfiguracji prefabów!");
+            yield break;
+        }
+
+        isDungeonGenerated = true;
+        Debug.Log("Rozpoczynam generowanie dungeonu...");
+        yield return new WaitForSeconds(1f);
         GenerateBossRoom();
         GenerateNetworkNodes();
         ConnectNetworkNodes();
@@ -170,6 +204,7 @@ public class DungeonGenerator : NetworkBehaviour
 
         yield return StartCoroutine(BuildAllObjects());
         Debug.Log("Generowanie dungeonu zakoñczone!");
+        this.gameObject.SetActive(false);
     }
 
     void GenerateBossRoom()
@@ -203,6 +238,8 @@ public class DungeonGenerator : NetworkBehaviour
 
     void CreateBossRoom(Vector2Int center)
     {
+        blockBuildDelay = 0.2f;
+        blocksPerFrame = 5;
         int halfSize = bossRoomSize / 2;
         for (int x = -halfSize; x <= halfSize; x++)
         {
@@ -218,12 +255,9 @@ public class DungeonGenerator : NetworkBehaviour
 
     void GenerateNetworkNodes()
     {
-        Vector2Int centerNode = Vector2Int.zero;
-        if (IsValidNodePosition(centerNode))
-        {
-            networkNodes.Add(centerNode);
-            nodeConnections[centerNode] = new List<Vector2Int>(8);
-        }
+        blockBuildDelay = 0.01f;
+        networkNodes.Add(Vector2Int.zero);
+        nodeConnections[Vector2Int.zero] = new List<Vector2Int>();
 
         int attempts = 0;
         while (networkNodes.Count < networkNodesCount && attempts < networkNodesCount * 50)
@@ -235,7 +269,7 @@ public class DungeonGenerator : NetworkBehaviour
             if (IsValidNodePosition(newNode))
             {
                 networkNodes.Add(newNode);
-                nodeConnections[newNode] = new List<Vector2Int>(8);
+                nodeConnections[newNode] = new List<Vector2Int>();
             }
             attempts++;
         }
@@ -244,9 +278,9 @@ public class DungeonGenerator : NetworkBehaviour
     bool IsValidNodePosition(Vector2Int pos)
     {
         if (IsTooCloseToBossRoom(pos)) return false;
-        for (int i = 0; i < networkNodes.Count; i++)
+        foreach (Vector2Int node in networkNodes)
         {
-            if (Vector2Int.Distance(pos, networkNodes[i]) < minNodeDistance)
+            if (Vector2Int.Distance(pos, node) < minNodeDistance)
                 return false;
         }
         return true;
@@ -254,21 +288,16 @@ public class DungeonGenerator : NetworkBehaviour
 
     bool IsTooCloseToBossRoom(Vector2Int pos)
     {
-        if (bossRoomPositions.Count == 0) return false;
-        int halfSize = bossRoomSize / 2;
-        int buffer = bossRoomTunnelBuffer + minNodeDistance;
-        return Vector2Int.Distance(pos, bossRoomCenter) < (halfSize + buffer);
+        return Vector2Int.Distance(pos, bossRoomCenter) < (bossRoomSize / 2 + bossRoomTunnelBuffer + minNodeDistance);
     }
 
     void ConnectNetworkNodes()
     {
-        for (int i = 0; i < networkNodes.Count; i++)
+        foreach (Vector2Int node in networkNodes)
         {
-            Vector2Int node = networkNodes[i];
             List<Vector2Int> nearestNodes = FindNearestNodes(node, 4);
-            for (int j = 0; j < nearestNodes.Count; j++)
+            foreach (Vector2Int nearestNode in nearestNodes)
             {
-                Vector2Int nearestNode = nearestNodes[j];
                 if (!nodeConnections[node].Contains(nearestNode))
                 {
                     nodeConnections[node].Add(nearestNode);
@@ -281,17 +310,16 @@ public class DungeonGenerator : NetworkBehaviour
 
     void ConnectBossRoomToNetwork()
     {
-        if (networkNodes.Count == 0) return;
-
         Vector2Int nearestNode = networkNodes[0];
         float minDistance = Vector2Int.Distance(bossRoomCenter, nearestNode);
-        for (int i = 1; i < networkNodes.Count; i++)
+
+        foreach (Vector2Int node in networkNodes)
         {
-            float distance = Vector2Int.Distance(bossRoomCenter, networkNodes[i]);
+            float distance = Vector2Int.Distance(bossRoomCenter, node);
             if (distance < minDistance)
             {
                 minDistance = distance;
-                nearestNode = networkNodes[i];
+                nearestNode = node;
             }
         }
         CreateBossRoomCorridor(nearestNode, bossRoomCenter);
@@ -300,29 +328,71 @@ public class DungeonGenerator : NetworkBehaviour
     void CreateBossRoomCorridor(Vector2Int from, Vector2Int to)
     {
         Vector2Int current = from;
-        Vector2Int direction = GetDirectionTo(from, to);
         int targetDistance = bossRoomSize / 2 + 2;
+        int maxIterations = mapSize * 2; // Safety limit to prevent infinite loops
+        int iterations = 0;
 
-        while (Vector2Int.Distance(current, to) > targetDistance)
+        // First, move horizontally
+        while (current.x != to.x && iterations < maxIterations)
         {
+            current.x += (current.x < to.x) ? 1 : -1;
+
+            for (int w = -bossRoomCorridorWidth / 2; w <= bossRoomCorridorWidth / 2; w++)
+            {
+                Vector2Int pos = current + new Vector2Int(0, w);
+                floorPositions.Add(pos);
+            }
+            iterations++;
+        }
+
+        // Then, move vertically
+        while (current.y != to.y && iterations < maxIterations)
+        {
+            current.y += (current.y < to.y) ? 1 : -1;
+
+            for (int w = -bossRoomCorridorWidth / 2; w <= bossRoomCorridorWidth / 2; w++)
+            {
+                Vector2Int pos = current + new Vector2Int(w, 0);
+                floorPositions.Add(pos);
+            }
+            iterations++;
+        }
+
+        // Now move towards the boss room until we're at the target distance
+        while (Vector2Int.Distance(current, to) > targetDistance && iterations < maxIterations)
+        {
+            Vector2Int direction = GetDirectionTo(current, to);
             current += direction;
+
             for (int w = -bossRoomCorridorWidth / 2; w <= bossRoomCorridorWidth / 2; w++)
             {
                 Vector2Int offset = (direction.x != 0) ? new Vector2Int(0, w) : new Vector2Int(w, 0);
-                Vector2Int corridorPos = current + offset;
-                floorPositions.Add(corridorPos);
-                bossRoomCorridorPositions.Add(corridorPos);
+                floorPositions.Add(current + offset);
             }
+            iterations++;
         }
+
+        if (iterations >= maxIterations)
+        {
+            Debug.LogWarning("CreateBossRoomCorridor hit maximum iterations limit!");
+        }
+
         bossRoomEntrance = current;
     }
 
     Vector2Int GetDirectionTo(Vector2Int from, Vector2Int to)
     {
         Vector2Int diff = to - from;
-        return Mathf.Abs(diff.x) > Mathf.Abs(diff.y)
-            ? new Vector2Int(diff.x > 0 ? 1 : -1, 0)
-            : new Vector2Int(0, diff.y > 0 ? 1 : -1);
+
+        // If we're already at the target, return zero vector
+        if (diff == Vector2Int.zero)
+            return Vector2Int.zero;
+
+        // Return the direction for the axis with the larger distance
+        if (Mathf.Abs(diff.x) > Mathf.Abs(diff.y))
+            return new Vector2Int(diff.x > 0 ? 1 : -1, 0);
+        else
+            return new Vector2Int(0, diff.y > 0 ? 1 : -1);
     }
 
     List<Vector2Int> FindNearestNodes(Vector2Int fromNode, int count)
@@ -330,8 +400,7 @@ public class DungeonGenerator : NetworkBehaviour
         List<Vector2Int> tempList = new List<Vector2Int>(networkNodes);
         tempList.Remove(fromNode);
         tempList.Sort((a, b) => Vector2Int.Distance(fromNode, a).CompareTo(Vector2Int.Distance(fromNode, b)));
-        int returnCount = Mathf.Min(count, tempList.Count);
-        return tempList.GetRange(0, returnCount);
+        return tempList.GetRange(0, Mathf.Min(count, tempList.Count));
     }
 
     void CreateExtraConnections()
@@ -351,13 +420,10 @@ public class DungeonGenerator : NetworkBehaviour
     void GenerateNetworkTunnels()
     {
         processedConnections.Clear();
-        for (int i = 0; i < networkNodes.Count; i++)
+        foreach (Vector2Int node in networkNodes)
         {
-            Vector2Int node = networkNodes[i];
-            List<Vector2Int> connections = nodeConnections[node];
-            for (int j = 0; j < connections.Count; j++)
+            foreach (Vector2Int connectedNode in nodeConnections[node])
             {
-                Vector2Int connectedNode = connections[j];
                 string connectionKey = GetConnectionKey(node, connectedNode);
                 if (!processedConnections.Contains(connectionKey))
                 {
@@ -395,7 +461,8 @@ public class DungeonGenerator : NetworkBehaviour
 
     void AddTunnelSegment(Vector2Int center, int width, bool horizontal)
     {
-        if (IsTooCloseToBossRoom(center, width, horizontal)) return;
+        if (IsTooCloseToBossRoom(center)) return;
+
         for (int w = -width / 2; w <= width / 2; w++)
         {
             Vector2Int offset = horizontal ? new Vector2Int(0, w) : new Vector2Int(w, 0);
@@ -403,24 +470,10 @@ public class DungeonGenerator : NetworkBehaviour
         }
     }
 
-    bool IsTooCloseToBossRoom(Vector2Int center, int width, bool horizontal)
-    {
-        if (bossRoomPositions.Count == 0) return false;
-        for (int w = -width / 2; w <= width / 2; w++)
-        {
-            Vector2Int offset = horizontal ? new Vector2Int(0, w) : new Vector2Int(w, 0);
-            Vector2Int checkPos = center + offset;
-            if (Vector2Int.Distance(checkPos, bossRoomCenter) < bossRoomSize / 2 + bossRoomTunnelBuffer)
-                return true;
-        }
-        return false;
-    }
-
     void GenerateProtrudingRooms()
     {
-        for (int i = 0; i < networkNodes.Count; i++)
+        foreach (Vector2Int node in networkNodes)
         {
-            Vector2Int node = networkNodes[i];
             int roomsForThisNode = Random.Range(1, maxRoomsPerNode + 1);
             for (int j = 0; j < roomsForThisNode; j++)
             {
@@ -528,9 +581,9 @@ public class DungeonGenerator : NetworkBehaviour
         HashSet<Vector2Int> wallsPlaced = new HashSet<Vector2Int>();
         foreach (Vector2Int pos in floorPositions)
         {
-            for (int i = 0; i < AllDirections.Length; i++)
+            foreach (Vector2Int direction in AllDirections)
             {
-                Vector2Int neighbor = pos + AllDirections[i];
+                Vector2Int neighbor = pos + direction;
                 if (!floorPositions.Contains(neighbor) && !wallsPlaced.Contains(neighbor))
                 {
                     wallsToInstantiate.Add(neighbor);
@@ -545,13 +598,21 @@ public class DungeonGenerator : NetworkBehaviour
         HashSet<Vector2Int> doorPositions = new HashSet<Vector2Int>();
         foreach (Vector2Int bossPos in bossRoomPositions)
         {
-            for (int i = 0; i < CardinalDirections.Length; i++)
+            foreach (Vector2Int direction in CardinalDirections)
             {
-                Vector2Int neighbor = bossPos + CardinalDirections[i];
+                Vector2Int neighbor = bossPos + direction;
                 if (floorPositions.Contains(neighbor) && !bossRoomPositions.Contains(neighbor) &&
                     !roomPositions.Contains(neighbor) && !doorPositions.Contains(neighbor))
                 {
-                    doorsToInstantiate.Add(neighbor);
+                    // SprawdŸ czy to g³ówne wejœcie do pokoju bosa
+                    if (Vector2Int.Distance(neighbor, bossRoomEntrance) < 3)
+                    {
+                        bossDoorsToInstantiate.Add(neighbor);
+                    }
+                    else
+                    {
+                        doorsToInstantiate.Add(neighbor);
+                    }
                     doorPositions.Add(neighbor);
                 }
             }
@@ -560,19 +621,13 @@ public class DungeonGenerator : NetworkBehaviour
 
     void PrepareSpawners()
     {
-        if (spawnerPrefab == null)
-        {
-            Debug.LogWarning("Spawner prefab nie zosta³ przypisany!");
-            return;
-        }
+        if (dungeonPrefabs == null || dungeonPrefabs.spawnerPrefab == null) return;
 
-        // Spawnery tylko w centrach pokoi
         foreach (Vector2Int roomCenter in roomCenters)
         {
             spawnersToInstantiate.Add(roomCenter);
         }
 
-        // Opcjonalnie w pokoju bosa
         if (spawnInBossRoom)
         {
             spawnersToInstantiate.Add(bossRoomCenter);
@@ -583,17 +638,78 @@ public class DungeonGenerator : NetworkBehaviour
 
     IEnumerator BuildAllObjects()
     {
-        yield return StartCoroutine(BuildObjectsFromList(bossFloorsToInstantiate, bossRoomFloorPrefab, "boss floors"));
-        yield return StartCoroutine(BuildObjectsFromList(roomFloorsToInstantiate, roomFloorPrefab, "room floors"));
-        yield return StartCoroutine(BuildObjectsFromList(floorsToInstantiate, floorPrefab, "corridor floors"));
-        yield return StartCoroutine(BuildObjectsFromList(wallsToInstantiate, wallPrefab, "walls"));
-        yield return StartCoroutine(BuildObjectsFromList(doorsToInstantiate, doorPrefab, "doors"));
+        yield return StartCoroutine(BuildObjectsFromList(bossFloorsToInstantiate, GetBossRoomFloorPrefab()));
+        yield return StartCoroutine(BuildObjectsFromList(roomFloorsToInstantiate, GetRoomFloorPrefab()));
+        yield return StartCoroutine(BuildObjectsFromList(floorsToInstantiate, GetFloorPrefab()));
+        yield return StartCoroutine(BuildObjectsFromList(wallsToInstantiate, GetWallPrefab()));
+        yield return StartCoroutine(BuildObjectsFromList(doorsToInstantiate, GetDoorPrefab()));
+        yield return StartCoroutine(BuildObjectsFromList(bossDoorsToInstantiate, GetBossRoomDoorPrefab()));
         yield return StartCoroutine(BuildSpawners());
     }
 
-    IEnumerator BuildObjectsFromList(List<Vector2Int> positions, GameObject prefab, string objectType)
+    // Metody pomocnicze do pobierania prefabów z ScriptableObject
+    GameObject GetFloorPrefab()
     {
-        Debug.Log($"Building {positions.Count} {objectType}...");
+        if (dungeonPrefabs == null) return null;
+
+        if (useAlternativeFloors && Random.Range(0f, 1f) < alternativePrefabChance)
+        {
+            return dungeonPrefabs.GetRandomFloorPrefab();
+        }
+        return dungeonPrefabs.floorPrefab;
+    }
+
+    GameObject GetRoomFloorPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+        return dungeonPrefabs.roomFloorPrefab != null ? dungeonPrefabs.roomFloorPrefab : dungeonPrefabs.floorPrefab;
+    }
+
+    GameObject GetBossRoomFloorPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+        return dungeonPrefabs.bossRoomFloorPrefab != null ? dungeonPrefabs.bossRoomFloorPrefab : dungeonPrefabs.floorPrefab;
+    }
+
+    GameObject GetWallPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+
+        if (useAlternativeWalls && Random.Range(0f, 1f) < alternativePrefabChance)
+        {
+            return dungeonPrefabs.GetRandomWallPrefab();
+        }
+        return dungeonPrefabs.wallPrefab;
+    }
+
+    GameObject GetDoorPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+        return dungeonPrefabs.doorPrefab;
+    }
+
+    GameObject GetBossRoomDoorPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+        return dungeonPrefabs.bossRoomDoorPrefab != null ? dungeonPrefabs.bossRoomDoorPrefab : dungeonPrefabs.doorPrefab;
+    }
+
+    GameObject GetSpawnerPrefab()
+    {
+        if (dungeonPrefabs == null) return null;
+
+        if (useRandomSpawnerVariants)
+        {
+            return dungeonPrefabs.GetRandomSpawnerPrefab();
+        }
+        return dungeonPrefabs.spawnerPrefab;
+    }
+
+    IEnumerator BuildObjectsFromList(List<Vector2Int> positions, GameObject prefab)
+    {
+        if (prefab == null || positions == null || positions.Count == 0)
+            yield break;
+
         int index = 0;
         while (index < positions.Count)
         {
@@ -602,11 +718,25 @@ public class DungeonGenerator : NetworkBehaviour
             {
                 Vector2Int pos = positions[i];
                 Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, 0);
-                GameObject obj = GetPooledObject(prefab);
-                obj.transform.position = worldPos;
-                obj.transform.rotation = Quaternion.identity;
-                obj.GetComponent<NetworkObject>().Spawn(true);
-                obj.transform.SetParent(transform);
+
+                // Dla œcian i prefabów alternatywnych, pobierz prefab dla ka¿dego obiektu osobno
+                GameObject currentPrefab = prefab;
+                if (positions == wallsToInstantiate)
+                {
+                    currentPrefab = GetWallPrefab();
+                }
+                else if (positions == floorsToInstantiate)
+                {
+                    currentPrefab = GetFloorPrefab();
+                }
+
+                GameObject obj = Instantiate(currentPrefab, worldPos, Quaternion.identity, transform);
+
+                NetworkObject networkObj = obj.GetComponent<NetworkObject>();
+                if (networkObj != null)
+                {
+                    networkObj.Spawn(true);
+                }
             }
             index = endIndex;
             yield return new WaitForSeconds(blockBuildDelay);
@@ -615,14 +745,12 @@ public class DungeonGenerator : NetworkBehaviour
 
     IEnumerator BuildSpawners()
     {
-        if (spawnerPrefab == null || spawnersToInstantiate.Count == 0) yield break;
+        if (dungeonPrefabs == null || dungeonPrefabs.spawnerPrefab == null || spawnersToInstantiate.Count == 0)
+            yield break;
 
-        Debug.Log($"Building {spawnersToInstantiate.Count} spawners...");
-
-        // S³ownik do œledzenia spawnerów na ka¿dej pozycji
         Dictionary<Vector2Int, GameObject> spawnersAtPosition = new Dictionary<Vector2Int, GameObject>();
-
         int index = 0;
+
         while (index < spawnersToInstantiate.Count)
         {
             int endIndex = Mathf.Min(index + blocksPerFrame, spawnersToInstantiate.Count);
@@ -630,34 +758,25 @@ public class DungeonGenerator : NetworkBehaviour
             {
                 Vector2Int pos = spawnersToInstantiate[i];
 
-                // SprawdŸ czy na tej pozycji ju¿ jest spawner
                 if (spawnersAtPosition.ContainsKey(pos))
                 {
-                    // ZnajdŸ istniej¹cy spawner i zwiêksz mu poziom
                     GameObject existingSpawner = spawnersAtPosition[pos];
                     RoomSpawner existingRoomSpawner = existingSpawner.GetComponent<RoomSpawner>();
-
                     if (existingRoomSpawner != null)
                     {
                         existingRoomSpawner.spawnerLevel++;
-                        Debug.Log($"Spawner na pozycji {pos} zosta³ poziomowany!");
                     }
-
-                    continue; // PrzejdŸ do nastêpnego spawnera
+                    continue;
                 }
 
-                // Stwórz nowy spawner
                 Vector3 worldPos = new Vector3(pos.x * spacing, pos.y * spacing, spawnerHeight);
-                GameObject spawner = GetPooledObject(spawnerPrefab);
-                spawner.transform.position = worldPos;
-                spawner.transform.rotation = Quaternion.identity;
+                GameObject spawnerPrefab = GetSpawnerPrefab();
+                GameObject spawner = Instantiate(spawnerPrefab, worldPos, Quaternion.identity, transform);
 
-                // Przeka¿ wymiary pokoju do RoomSpawner
                 RoomSpawner roomSpawner = spawner.GetComponent<RoomSpawner>();
                 if (roomSpawner != null && roomSizes.ContainsKey(pos))
                 {
-                    Vector2Int roomSize = roomSizes[pos];
-                    roomSpawner.roomSizeArea = roomSize;
+                    roomSpawner.roomSizeArea = roomSizes[pos];
                 }
 
                 NetworkObject networkObj = spawner.GetComponent<NetworkObject>();
@@ -665,15 +784,20 @@ public class DungeonGenerator : NetworkBehaviour
                 {
                     networkObj.Spawn(true);
                 }
-                spawner.transform.SetParent(transform);
 
-                // Zapisz spawner w s³owniku
                 spawnersAtPosition[pos] = spawner;
             }
             index = endIndex;
             yield return new WaitForSeconds(blockBuildDelay);
         }
+    }
 
+    void OnDestroy()
+    {
+        if (generateDungeonButton != null)
+        {
+            generateDungeonButton.onClick.RemoveListener(OnGenerateDungeonButtonPressed);
+        }
     }
 
     // Publiczne metody dostêpu
@@ -682,4 +806,12 @@ public class DungeonGenerator : NetworkBehaviour
     public List<Vector2Int> GetRoomCenters() => new List<Vector2Int>(roomCenters);
     public List<Vector2Int> GetSpawnerPositions() => new List<Vector2Int>(spawnersToInstantiate);
     public Dictionary<Vector2Int, Vector2Int> GetRoomSizes() => new Dictionary<Vector2Int, Vector2Int>(roomSizes);
+    public DungeonPrefabs GetDungeonPrefabs() => dungeonPrefabs;
+
+    // Metoda do zmiany konfiguracji prefabów w runtime
+    public void SetDungeonPrefabs(DungeonPrefabs newPrefabs)
+    {
+        dungeonPrefabs = newPrefabs;
+        ValidatePrefabConfiguration();
+    }
 }
