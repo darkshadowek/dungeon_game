@@ -4,6 +4,12 @@ using UnityEngine.UI;
 
 public class InventoryPanelUI : MonoBehaviour
 {
+    public Transform chestInventory;
+    private HandController handController;
+    private void Start()
+    {
+        handController = GameObject.FindAnyObjectByType<HandController>();
+    }
     public void HideAllImages(Transform parent)
     {
         Image img = parent.GetComponent<Image>();
@@ -52,6 +58,18 @@ public class InventoryPanelUI : MonoBehaviour
         foreach (Transform child in parent)
         {
             ShowAllImages(child);
+        }
+    }
+    public void ChestInventoryClose()
+    {
+        foreach (Transform child in chestInventory)
+        {
+            child.gameObject.SetActive(false);
+        }
+        if(handController.chest)
+        {
+            handController.chestInventoryUI.SynchronizeChestWithItems(handController.chest);
+            handController.chest = null;
         }
     }
 }

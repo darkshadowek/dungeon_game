@@ -4,6 +4,7 @@ public class GameManager : MonoBehaviour
 {
     private void Awake()
     {
+        DontDestroyOnLoad(gameObject);
         Application.targetFrameRate = 90;
     }
     

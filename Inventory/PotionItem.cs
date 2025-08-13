@@ -3,9 +3,16 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "NewPotion", menuName = "Items/Potion")]
 public class PotionItem : Item
 {
-    public int healAmount;
-    public override void Use(GameObject user)
+    [Header("Potion")]
+    public int amount;
+    public PotionsType potionType;
+    public override void Use()
     {
-        Debug.Log($"Drinking potion {itemName}, healing {healAmount} HP!");
+        PlayerBody.PlayerInstance.PotionUse(amount, potionType);
     }
+}
+public enum PotionsType
+{
+    Healthpotion,
+    Manapotion,
 }

@@ -1,9 +1,8 @@
 using TMPro;
 using UnityEngine.EventSystems;
 using UnityEngine;
-using Unity.VisualScripting;
 
-public class InventoryUI : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler, IDropHandler
+public class InventoryUI : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler, IDropHandler, IPointerClickHandler
 {
     public UnityEngine.UI.Image icon;
     public Item item;
@@ -55,6 +54,12 @@ public class InventoryUI : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndD
     void UpdateQuantity()
     {
         quantityText.text = quantity > 1 ? quantity.ToString() : "";
+        if (quantity == 0)
+        {
+            item = null;
+            icon.sprite = null;
+            icon.color = new Color(255,255,255,0);
+        }
     }
     
     public void OnBeginDrag(PointerEventData eventData)
@@ -222,9 +227,11 @@ public class InventoryUI : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndD
     
     public void OnPointerClick(PointerEventData eventData)
     {
-        if (item != null)
+        if (item != null && item.itemType == ItemType.Potion && PlayerBody.PlayerInstance.health != PlayerBody.PlayerInstance.maxHealth)
         {
-            item.Use(gameObject);
+            item.Use();
+            quantity--;
+            UpdateQuantity();
         }
     }
     

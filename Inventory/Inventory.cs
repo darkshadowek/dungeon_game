@@ -3,11 +3,12 @@ using UnityEngine;
 
 public class Inventory : MonoBehaviour
 {
-    public List<Item> items;
     public GameObject slotPrefab;
     public Transform slotParent;
     public int maxSlots = 20;
 
+    public Transform slotParentChest;
+    public int maxSlotsChest = 9;
     void Awake()
     {
         for (int i = 0; i < maxSlots; i++)
@@ -15,10 +16,10 @@ public class Inventory : MonoBehaviour
             GameObject emptySlot = Instantiate(slotPrefab, slotParent);
             emptySlot.GetComponent<InventoryUI>().ClearSlot();
         }
-
-        foreach (var item in items)
+        for (int i = 0; i < maxSlotsChest; i++)
         {
-            AddItemToInventory(item);
+            GameObject emptySlot = Instantiate(slotPrefab, slotParentChest);
+            emptySlot.GetComponent<InventoryUI>().ClearSlot();
         }
     }
 
