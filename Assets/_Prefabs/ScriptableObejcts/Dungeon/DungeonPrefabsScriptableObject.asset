@@ -1,0 +1,27 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ddf09c6a2db15ab4c9f72d32a58d4ae7, type: 3}
+  m_Name: DungeonPrefabsScriptableObject
+  m_EditorClassIdentifier: 
+  floorPrefab: {fileID: 8492397405010807503, guid: 92edcd944e3f6b5408cc4d6a63fe2708, type: 3}
+  roomFloorPrefab: {fileID: 8492397405010807503, guid: 72be0f1bbc881364e8c218a0e1b8a704, type: 3}
+  wallPrefab: {fileID: 8492397405010807503, guid: e252b9a057e6fe347916395a36c16b23, type: 3}
+  bossRoomFloorPrefab: {fileID: 8492397405010807503, guid: 7b4661e58ef55c9479f5b1ba5316a1f1, type: 3}
+  doorPrefab: {fileID: 8492397405010807503, guid: cb04afc5dfeaaab4cbe210fd5ac328e4, type: 3}
+  spawnerPrefab: {fileID: 1152837136618885064, guid: 9e88d47bb5d6c0b409a987e9d395d0aa, type: 3}
+  alternativeFloorPrefabs: []
+  alternativeWallPrefabs: []
+  specialRoomPrefabs: []
+  bossRoomDoorPrefab: {fileID: 0}
+  lockedDoorPrefab: {fileID: 0}
+  trapDoorPrefab: {fileID: 0}
+  spawnerVariants: []
